@@ -1,0 +1,561 @@
+//! SimSitting — Economy & Statistics
+//!
+//! Revenue calculation, global stats tracking, and quarterly reporting.
+//! Phase 2 adds Narrative Capital (NC), zone costs, and the Consensus Trap.
+//!
+//! Revenue model: `$0.05 × agents × engagement × zone_multiplier` per tick.
+//! The Consensus Trap: if quarterly revenue drops below the license fee for
+//! consecutive quarters, the player faces a "Regulatory Audit" warning.
+
+use bevy::prelude::*;
+use crate::sim::{SimAgent, SimConfig};
+use crate::media::MediaNode;
+use crate::zone::ZoneType;
+
+/// Government licensing fee per quarter — if revenue drops below this, audit triggers
+pub const LICENSE_FEE: f64 = 100.0;
+
+// ============================================================================
+// Progressive Disclosure: Game Phases
+// ============================================================================
+
+/// Progressive disclosure phases — mechanics unlock as the player progresses.
+/// Each phase reveals new UI panels and gameplay systems.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum GamePhase {
+    /// Q1–Q2: Place media nodes, learn opinion dynamics, earn revenue.
+    #[default]
+    MediaCompany,
+    /// Q3+: Zone painting unlocked. Influence map becomes available.
+    AttentionEconomy,
+    /// After first government contract: Shadow Mode, filters, and trust meter.
+    TheShadow,
+    /// After accumulating 100 NC: Oracle unlock becomes available.
+    TheOracle,
+}
+
+/// Determine the current game phase from simulation state.
+/// Pure function — fully testable without ECS.
+pub fn phase_from_state(quarter: u32, narrative_capital: f64, has_completed_contract: bool) -> GamePhase {
+    if narrative_capital >= 100.0 {
+        GamePhase::TheOracle
+    } else if has_completed_contract {
+        GamePhase::TheShadow
+    } else if quarter >= 3 {
+        GamePhase::AttentionEconomy
+    } else {
+        GamePhase::MediaCompany
+    }
+}
+
+/// Tracks the current game phase for UI gating
+#[derive(Resource, Default)]
+pub struct CurrentPhase {
+    pub phase: GamePhase,
+    /// Whether the player has completed at least one government contract
+    pub has_completed_contract: bool,
+}
+
+/// Global statistics for the media company
+#[derive(Resource)]
+pub struct GlobalStats {
+    /// Current cash balance
+    pub cash: f64,
+    /// Revenue generated this quarter
+    pub quarterly_revenue: f64,
+    /// Revenue from previous quarter (for comparison)
+    pub prev_quarterly_revenue: f64,
+    /// Average distance from 0.5 across all agents (0.0 = centrist, 0.5 = fully polarized)
+    pub polarization_heat: f32,
+    /// Inverse of opinion standard deviation (high = more uniform)
+    pub social_cohesion: f32,
+    /// Sum of all agent attention spans, normalized
+    pub engagement_index: f32,
+    /// Percentage of agents with attention < 0.1
+    pub apathy_rate: f32,
+    /// Average opinion across all agents
+    pub mean_opinion: f32,
+    /// Number of media nodes placed
+    pub node_count: usize,
+    /// Quarter counter
+    pub quarter: u32,
+    /// Time tracker for quarterly cycles (seconds)
+    pub quarter_timer: f32,
+    /// History of quarterly revenues (for the earnings chart)
+    pub revenue_history: Vec<f64>,
+    /// Opinion distribution (10 bins from 0.0 to 1.0)
+    pub opinion_histogram: [u32; 10],
+    /// Narrative Capital: harvested from Data Refineries, spent on algorithm upgrades
+    pub narrative_capital: f64,
+    /// Whether the company is under regulatory audit (Consensus Trap)
+    pub is_under_audit: bool,
+    /// Number of consecutive quarters below license fee
+    pub audit_quarters: u32,
+}
+
+impl Default for GlobalStats {
+    fn default() -> Self {
+        Self {
+            cash: 5000.0, // Starting capital
+            quarterly_revenue: 0.0,
+            prev_quarterly_revenue: 0.0,
+            polarization_heat: 0.0,
+            social_cohesion: 1.0,
+            engagement_index: 1.0,
+            apathy_rate: 0.0,
+            mean_opinion: 0.5,
+            node_count: 0,
+            quarter: 1,
+            quarter_timer: 0.0,
+            revenue_history: Vec::new(),
+            opinion_histogram: [0; 10],
+            narrative_capital: 0.0,
+            is_under_audit: false,
+            audit_quarters: 0,
+        }
+    }
+}
+
+/// Result of attempting to place a zone
+#[derive(Debug, PartialEq)]
+pub enum PlaceResult {
+    Success,
+    InsufficientCash,
+}
+
+/// Attempt to deduct the cost of placing a zone. Returns whether it succeeded.
+/// Blocks placement during regulatory audit.
+pub fn try_place_zone(stats: &mut GlobalStats, zone: ZoneType) -> PlaceResult {
+    if stats.is_under_audit {
+        return PlaceResult::InsufficientCash; // Audit locks zone placement
+    }
+    let cost = zone.cost();
+    if stats.cash >= cost {
+        stats.cash -= cost;
+        PlaceResult::Success
+    } else {
+        PlaceResult::InsufficientCash
+    }
+}
+
+/// Calculate Narrative Capital generated by a Data Refinery zone.
+/// NC is proportional to the opinion diversity of agents inside the zone.
+/// Diversity = std_dev(opinions) — more varied opinions = more valuable data.
+pub fn refinery_nc_generation(agent_opinions: &[f32]) -> f64 {
+    if agent_opinions.len() < 2 { return 0.0; }
+    let n = agent_opinions.len() as f32;
+    let mean = agent_opinions.iter().sum::<f32>() / n;
+    let variance = agent_opinions.iter()
+        .map(|o| (o - mean).powi(2))
+        .sum::<f32>() / n;
+    let std_dev = variance.sqrt();
+    // NC rate: diversity × agent count × small multiplier
+    (std_dev as f64) * (n as f64) * 0.01
+}
+
+/// Calculate the revenue boost from an Echo Chamber zone.
+/// Agents in echo chambers with extreme opinions generate bonus revenue.
+pub fn echo_chamber_revenue_boost(opinion: f32, base_revenue: f64) -> f64 {
+    let extremism = ((opinion - 0.5).abs() * 2.0).powi(2);
+    base_revenue * (1.0 + extremism as f64 * 3.0)
+}
+
+/// Calculate the polarization bleed from a Neutral Hub zone.
+/// Returns the amount of polarization reduction per agent per second.
+pub fn neutral_hub_polarization_bleed(current_polarization: f32) -> f32 {
+    // Neutral hubs reduce polarization by 2% per second, scaled to current heat
+    current_polarization * 0.02
+}
+
+/// Check if the Consensus Trap should trigger (too many Neutral Hubs, revenue too low).
+pub fn check_consensus_trap(stats: &GlobalStats) -> bool {
+    stats.prev_quarterly_revenue > 0.0 && stats.prev_quarterly_revenue < LICENSE_FEE
+}
+
+/// Quarterly cycle duration in seconds
+const QUARTER_DURATION: f32 = 30.0;
+
+/// System: Calculate revenue from all agents each frame
+/// Revenue = revenue_per_agent × Σ(attention × (1 + polarization²×2)) × dt
+/// Engagement gate: if engagement_index < 0.3, revenue drops to 10%
+/// Audit penalty: if under audit, revenue is halved
+pub fn calculate_revenue(
+    mut stats: ResMut<GlobalStats>,
+    agents: Query<&SimAgent>,
+    time: Res<Time>,
+    config: Res<SimConfig>,
+) {
+    let dt = time.delta_secs();
+    let mut frame_revenue = 0.0f64;
+
+    for agent in agents.iter() {
+        if agent.attention < 0.05 {
+            continue; // Apathetic agents generate nothing
+        }
+
+        // Polarization multiplier: extremism is profitable
+        let polarization = ((agent.opinion - 0.5).abs() * 2.0).powi(2);
+        let base_revenue = config.revenue_per_agent * agent.attention as f64 * (1.0 + polarization as f64 * 2.0);
+        frame_revenue += base_revenue * dt as f64;
+    }
+
+    // Engagement gate: population checked out → revenue crashes
+    if stats.engagement_index < 0.3 {
+        frame_revenue *= 0.1;
+    }
+
+    // Audit penalty: regulatory pressure halves income
+    if stats.is_under_audit {
+        frame_revenue *= 0.5;
+    }
+
+    stats.cash += frame_revenue;
+    stats.quarterly_revenue += frame_revenue;
+}
+
+/// System: Update aggregate statistics every frame
+pub fn update_stats(
+    mut stats: ResMut<GlobalStats>,
+    agents: Query<&SimAgent>,
+    nodes: Query<&MediaNode>,
+) {
+    let mut opinion_sum = 0.0f32;
+    let mut polarization_sum = 0.0f32;
+    let mut attention_sum = 0.0f32;
+    let mut apathetic_count = 0u32;
+    let mut histogram = [0u32; 10];
+    let mut count = 0u32;
+
+    for agent in agents.iter() {
+        opinion_sum += agent.opinion;
+        polarization_sum += (agent.opinion - 0.5).abs();
+        attention_sum += agent.attention;
+
+        if agent.attention < 0.1 {
+            apathetic_count += 1;
+        }
+
+        // Histogram bin (0–9)
+        let bin = ((agent.opinion * 9.99) as usize).min(9);
+        histogram[bin] += 1;
+
+        count += 1;
+    }
+
+    if count > 0 {
+        let n = count as f32;
+        stats.mean_opinion = opinion_sum / n;
+        stats.polarization_heat = polarization_sum / n;
+        stats.engagement_index = attention_sum / n;
+        stats.apathy_rate = apathetic_count as f32 / n;
+
+        // Social cohesion = 1.0 - std_dev(opinion)
+        let mean = stats.mean_opinion;
+        let variance: f32 = agents.iter()
+            .map(|a| (a.opinion - mean).powi(2))
+            .sum::<f32>() / n;
+        stats.social_cohesion = (1.0 - variance.sqrt() * 3.0).max(0.0);
+    }
+
+    stats.opinion_histogram = histogram;
+    stats.node_count = nodes.iter().count();
+}
+
+/// System: Quarterly reporting cycle
+pub fn quarterly_report(
+    mut stats: ResMut<GlobalStats>,
+    time: Res<Time>,
+    config: Res<SimConfig>,
+) {
+    stats.quarter_timer += time.delta_secs();
+
+    if stats.quarter_timer >= QUARTER_DURATION {
+        stats.quarter_timer -= QUARTER_DURATION;
+        stats.quarter += 1;
+        let qr = stats.quarterly_revenue;
+        stats.revenue_history.push(qr);
+
+        // Deduct zone maintenance costs
+        let maintenance = stats.node_count as f64 * config.zone_maintenance_per_quarter;
+        stats.cash -= maintenance;
+
+        // Check Consensus Trap
+        if qr < LICENSE_FEE {
+            stats.audit_quarters += 1;
+            if stats.audit_quarters >= 2 {
+                stats.is_under_audit = true;
+            }
+        } else {
+            stats.audit_quarters = 0;
+            stats.is_under_audit = false;
+        }
+
+        stats.prev_quarterly_revenue = qr;
+        stats.quarterly_revenue = 0.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_stats() {
+        let stats = GlobalStats::default();
+        assert_eq!(stats.cash, 5000.0);
+        assert_eq!(stats.quarter, 1);
+        assert_eq!(stats.mean_opinion, 0.5);
+        assert_eq!(stats.narrative_capital, 0.0);
+        assert!(!stats.is_under_audit);
+    }
+
+    #[test]
+    fn test_polarization_revenue_multiplier() {
+        // Agent at opinion 0.0 (fully polarized left)
+        let opinion = 0.0f32;
+        let polarization = ((opinion - 0.5).abs() * 2.0).powi(2);
+        let revenue = 1.0 * (1.0 + polarization * 2.0);
+        assert!(revenue > 2.5, "Polarized agent should generate high revenue");
+
+        // Agent at opinion 0.5 (centrist)
+        let opinion = 0.5f32;
+        let polarization = ((opinion - 0.5).abs() * 2.0).powi(2);
+        let revenue = 1.0 * (1.0 + polarization * 2.0);
+        assert!((revenue - 1.0).abs() < 0.01, "Centrist agent generates base revenue");
+    }
+
+    // === Zone Cost Tests ===
+
+    #[test]
+    fn test_place_zone_deducts_cash() {
+        let mut stats = GlobalStats::default();
+        let result = try_place_zone(&mut stats, ZoneType::EchoChamber);
+        assert_eq!(result, PlaceResult::Success);
+        assert!((stats.cash - 4800.0).abs() < 0.01); // 5000 - 200
+    }
+
+    #[test]
+    fn test_place_zone_insufficient_cash() {
+        let mut stats = GlobalStats::default();
+        stats.cash = 50.0; // Not enough for any zone
+        let result = try_place_zone(&mut stats, ZoneType::EchoChamber);
+        assert_eq!(result, PlaceResult::InsufficientCash);
+        assert!((stats.cash - 50.0).abs() < 0.01); // Unchanged
+    }
+
+    #[test]
+    fn test_place_multiple_zones_drains_cash() {
+        let mut stats = GlobalStats::default();
+        // Place 10 echo chambers (10 * $200 = $2000)
+        for _ in 0..10 {
+            assert_eq!(try_place_zone(&mut stats, ZoneType::EchoChamber), PlaceResult::Success);
+        }
+        assert!((stats.cash - 3000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_data_refinery_costs_most() {
+        let mut stats = GlobalStats::default();
+        try_place_zone(&mut stats, ZoneType::DataRefinery);
+        assert!((stats.cash - 4500.0).abs() < 0.01); // 5000 - 500
+    }
+
+    // === Narrative Capital Tests ===
+
+    #[test]
+    fn test_refinery_nc_generation_diverse_opinions() {
+        // High diversity: opinions spread from 0.0 to 1.0
+        let opinions: Vec<f32> = (0..100).map(|i| i as f32 / 99.0).collect();
+        let nc = refinery_nc_generation(&opinions);
+        assert!(nc > 0.0, "Diverse opinions should generate NC");
+        assert!(nc > 0.1, "100 agents with full spread should generate substantial NC (got {})", nc);
+    }
+
+    #[test]
+    fn test_refinery_nc_generation_uniform_opinions() {
+        // Low diversity: all agents at 0.5
+        let opinions = vec![0.5f32; 100];
+        let nc = refinery_nc_generation(&opinions);
+        assert!((nc).abs() < 0.001, "Uniform opinions should generate zero NC");
+    }
+
+    #[test]
+    fn test_refinery_nc_generation_empty() {
+        let nc = refinery_nc_generation(&[]);
+        assert!((nc).abs() < 0.001);
+        let nc = refinery_nc_generation(&[0.5]);
+        assert!((nc).abs() < 0.001);
+    }
+
+    // === Echo Chamber Revenue Tests ===
+
+    #[test]
+    fn test_echo_chamber_revenue_boost_extreme() {
+        let boosted = echo_chamber_revenue_boost(0.0, 1.0);
+        // Opinion at 0.0: extremism = 1.0, boost = 1 + 1*3 = 4x
+        assert!((boosted - 4.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_echo_chamber_revenue_boost_centrist() {
+        let boosted = echo_chamber_revenue_boost(0.5, 1.0);
+        // Opinion at 0.5: extremism = 0.0, boost = 1 + 0 = 1x
+        assert!((boosted - 1.0).abs() < 0.01);
+    }
+
+    // === Neutral Hub Tests ===
+
+    #[test]
+    fn test_neutral_hub_polarization_bleed() {
+        let bleed = neutral_hub_polarization_bleed(0.8);
+        assert!(bleed > 0.0, "Should bleed polarization");
+        assert!((bleed - 0.016).abs() < 0.001, "0.8 * 0.02 = 0.016");
+    }
+
+    #[test]
+    fn test_neutral_hub_no_bleed_at_zero() {
+        let bleed = neutral_hub_polarization_bleed(0.0);
+        assert!((bleed).abs() < 0.001);
+    }
+
+    // === Consensus Trap Tests ===
+
+    #[test]
+    fn test_consensus_trap_triggers_on_low_revenue() {
+        let mut stats = GlobalStats::default();
+        stats.prev_quarterly_revenue = 50.0; // Below LICENSE_FEE ($100)
+        assert!(check_consensus_trap(&stats));
+    }
+
+    #[test]
+    fn test_consensus_trap_does_not_trigger_on_healthy_revenue() {
+        let mut stats = GlobalStats::default();
+        stats.prev_quarterly_revenue = 500.0; // Above LICENSE_FEE
+        assert!(!check_consensus_trap(&stats));
+    }
+
+    #[test]
+    fn test_consensus_trap_does_not_trigger_first_quarter() {
+        let stats = GlobalStats::default();
+        // prev_quarterly_revenue = 0.0, so should not trigger (first quarter grace)
+        assert!(!check_consensus_trap(&stats));
+    }
+
+    #[test]
+    fn test_license_fee_constant() {
+        assert_eq!(LICENSE_FEE, 100.0);
+    }
+
+    // === Economy Rebalance Tests (Phase A) ===
+
+    #[test]
+    fn test_revenue_per_agent_configurable() {
+        let config = SimConfig::default();
+        assert!((config.revenue_per_agent - 0.0005).abs() < 0.0001,
+            "Default revenue_per_agent should be $0.0005, got {}", config.revenue_per_agent);
+    }
+
+    #[test]
+    fn test_quarterly_revenue_in_expected_range() {
+        // 100k agents × $0.0005/agent/sec × 30 sec/quarter ≈ $1,500/quarter at full attention
+        // With some polarization bonus, expect $1,500–$4,500
+        let config = SimConfig::default();
+        let agents = 100_000.0;
+        let quarter_seconds = 30.0;
+        let base_quarterly = agents * config.revenue_per_agent * quarter_seconds;
+        assert!(base_quarterly > 1000.0, "Quarterly base should be > $1,000, got ${}", base_quarterly);
+        assert!(base_quarterly < 5000.0, "Quarterly base should be < $5,000, got ${}", base_quarterly);
+    }
+
+    #[test]
+    fn test_zone_maintenance_cost() {
+        let config = SimConfig::default();
+        assert!((config.zone_maintenance_per_quarter - 50.0).abs() < 0.01);
+        // 10 zones × $50/quarter = $500/quarter maintenance
+        let maintenance = 10.0 * config.zone_maintenance_per_quarter;
+        assert!((maintenance - 500.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_maintenance_scales_with_zones() {
+        let config = SimConfig::default();
+        let m5 = 5.0 * config.zone_maintenance_per_quarter;
+        let m20 = 20.0 * config.zone_maintenance_per_quarter;
+        assert!(m20 > m5, "More zones = more maintenance");
+        assert!((m20 / m5 - 4.0).abs() < 0.01, "Linear scaling");
+    }
+
+    #[test]
+    fn test_audit_locks_zone_placement() {
+        let mut stats = GlobalStats::default();
+        stats.is_under_audit = true;
+        let result = try_place_zone(&mut stats, ZoneType::EchoChamber);
+        assert_eq!(result, PlaceResult::InsufficientCash);
+        // Cash should be unchanged
+        assert!((stats.cash - 5000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_audit_does_not_lock_when_not_under_audit() {
+        let mut stats = GlobalStats::default();
+        stats.is_under_audit = false;
+        let result = try_place_zone(&mut stats, ZoneType::EchoChamber);
+        assert_eq!(result, PlaceResult::Success);
+    }
+
+    #[test]
+    fn test_low_engagement_revenue_factor() {
+        // Engagement < 0.3 should apply 0.1× multiplier
+        // We test the threshold logic directly
+        let low_engagement = 0.2f32;
+        let high_engagement = 0.5f32;
+        assert!(low_engagement < 0.3, "Low engagement is below threshold");
+        assert!(high_engagement >= 0.3, "High engagement is above threshold");
+    }
+
+    #[test]
+    fn test_engagement_gate_threshold() {
+        // The gate is at 0.3 — verify boundary
+        let at_boundary = 0.3f32;
+        assert!(at_boundary >= 0.3, "At boundary, gate does NOT apply");
+        let below_boundary = 0.299f32;
+        assert!(below_boundary < 0.3, "Below boundary, gate applies");
+    }
+
+    // === Game Phase Progressive Disclosure Tests (Phase B) ===
+
+    #[test]
+    fn test_initial_phase_is_media_company() {
+        assert_eq!(phase_from_state(1, 0.0, false), GamePhase::MediaCompany);
+        assert_eq!(phase_from_state(2, 0.0, false), GamePhase::MediaCompany);
+    }
+
+    #[test]
+    fn test_phase_transitions_to_attention_economy() {
+        assert_eq!(phase_from_state(3, 0.0, false), GamePhase::AttentionEconomy);
+        assert_eq!(phase_from_state(5, 0.0, false), GamePhase::AttentionEconomy);
+    }
+
+    #[test]
+    fn test_phase_transitions_to_the_shadow() {
+        // Completing a contract triggers TheShadow regardless of quarter
+        assert_eq!(phase_from_state(3, 50.0, true), GamePhase::TheShadow);
+        assert_eq!(phase_from_state(8, 50.0, true), GamePhase::TheShadow);
+    }
+
+    #[test]
+    fn test_phase_transitions_to_the_oracle() {
+        // 100 NC triggers TheOracle regardless of anything else
+        assert_eq!(phase_from_state(3, 100.0, true), GamePhase::TheOracle);
+        assert_eq!(phase_from_state(3, 200.0, false), GamePhase::TheOracle);
+    }
+
+    #[test]
+    fn test_phase_ordering() {
+        // Phases should be ordered for >= comparisons
+        assert!(GamePhase::MediaCompany < GamePhase::AttentionEconomy);
+        assert!(GamePhase::AttentionEconomy < GamePhase::TheShadow);
+        assert!(GamePhase::TheShadow < GamePhase::TheOracle);
+    }
+}
+

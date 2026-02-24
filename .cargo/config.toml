@@ -1,0 +1,9 @@
+# Build defaults for WASM target
+# Uncomment [target] section when building for web
+# Keep commented for `cargo test` to work on native
+
+# [build]
+# target = "wasm32-unknown-unknown"
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+atomics,+bulk-memory,+mutable-globals"]

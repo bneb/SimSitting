@@ -1,0 +1,14 @@
+[build]
+target = "index.html"
+filehash = true
+dist = "dist"
+# Custom domain miserable.work serves from root — no path prefix needed
+public_url = "/"
+
+[watch]
+watch = ["src", "assets"]
+
+[serve]
+address = "127.0.0.1"
+port = 8080
+open = false
