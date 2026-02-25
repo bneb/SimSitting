@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SimSitting — Media Company Simulator</title>
+    <meta name="description"
+        content="SimSitting: A SimCity-like media company simulator. Interactive art exploring mechanisms of control, media manipulation, and the attention economy. 100,000 agents. WebGPU. The time is 6:47 PM." />
+    
+<script type="module">
+import init, * as bindings from '/simsitting-4e6887ff491b040f.js';
+const wasm = await init({ module_or_path: '/simsitting-4e6887ff491b040f_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+    
+    <script src="coi-serviceworker.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&display=swap');
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0a0a0c;
+            font-family: 'IBM Plex Mono', 'Courier New', monospace;
+            color: #c0c0c0;
+        }
+
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* =============================== */
+        /* BIOS Boot Terminal              */
+        /* =============================== */
+        #boot-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            align-items: flex-start;
+            background: #000;
+            z-index: 9999;
+            padding: 24px 32px;
+            overflow-y: auto;
+            transition: opacity 0.8s ease;
+        }
+
+        #boot-screen.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        #bios-text {
+            font-size: 13px;
+            line-height: 1.6;
+            color: #33ff33;
+            white-space: pre;
+            max-width: 720px;
+        }
+
+        #bios-text .header {
+            color: #00a99d;
+            font-weight: 700;
+        }
+
+        #bios-text .warn {
+            color: #ff8c00;
+        }
+
+        #bios-text .purple {
+            color: #753bbd;
+        }
+
+        #bios-text .dim {
+            color: #555;
+        }
+
+        #bios-text .white {
+            color: #c0c0c0;
+        }
+
+        #bios-text .quote {
+            color: #aaa;
+            font-style: italic;
+        }
+
+        .cursor {
+            display: inline-block;
+            width: 8px;
+            height: 14px;
+            background: #33ff33;
+            animation: blink 0.6s step-end infinite;
+            vertical-align: text-bottom;
+            margin-left: 2px;
+        }
+
+        @keyframes blink {
+            50% {
+                opacity: 0;
+            }
+        }
+
+        #start-btn {
+            display: none;
+            margin-top: 24px;
+            padding: 10px 28px;
+            background: #000;
+            color: #33ff33;
+            border: 1px solid #33ff33;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 14px;
+            font-weight: 700;
+            letter-spacing: 0.15em;
+            cursor: pointer;
+            text-transform: uppercase;
+            transition: all 0.15s;
+        }
+
+        #start-btn:hover {
+            background: #33ff33;
+            color: #000;
+        }
+
+        #start-btn:active {
+            background: #00a99d;
+        }
+
+        .error-msg {
+            display: none;
+            text-align: center;
+            padding: 2rem;
+            max-width: 500px;
+            margin: auto;
+        }
+
+        .error-msg h2 {
+            color: #ff6b6b;
+            margin-bottom: 1rem;
+            font-weight: 400;
+        }
+
+        .error-msg p {
+            color: #889;
+            line-height: 1.7;
+            font-size: 0.9rem;
+        }
+
+        /* CRT Overlay applied to the canvas */
+        #crt-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 100;
+            background: repeating-linear-gradient(0deg,
+                    rgba(0, 0, 0, 0.05) 0px,
+                    rgba(0, 0, 0, 0.05) 1px,
+                    transparent 1px,
+                    transparent 3px);
+            mix-blend-mode: multiply;
+        }
+    </style>
+<link rel="modulepreload" href="/simsitting-4e6887ff491b040f.js" crossorigin="anonymous" integrity="sha384-ubVBWWOImKOn3oNl4bGmU1h+2pTjRrd3DgzVmMw+4qJgoUnVtKcTawuLDpHxriP/"><link rel="preload" href="/simsitting-4e6887ff491b040f_bg.wasm" crossorigin="anonymous" integrity="sha384-rAxa5e8yEPBVnz86rvWxqBDzSngZHhKUf+0SxKGt4Gkk6UnchXEAEmxiCud997u+" as="fetch" type="application/wasm"></head>
+
+<body>
+    <canvas id="bevy-canvas"></canvas>
+    <div id="crt-overlay"></div>
+
+    <div id="boot-screen">
+        <div id="bios-text"></div>
+        <span class="cursor" id="cursor"></span>
+        <button id="start-btn">▸ START_OS</button>
+        <div class="error-msg" id="webgpu-error">
+            <h2>WebGPU Not Available</h2>
+            <p>
+                SimSitting requires WebGPU for its social physics engine.
+                Please use Chrome 113+ or Edge 113+ with WebGPU enabled.
+                <br /><br />
+                Navigate to <code>chrome://flags/#enable-unsafe-webgpu</code>
+                and enable the flag.
+            </p>
+        </div>
+    </div>
+
+    <script>
+        const POST_LINES = [
+            { text: "SIMSITTING(TM) SYSTEMS BIOS V4.06.47", cls: "header", delay: 80 },
+            { text: "COPYRIGHT (C) 1996-2026 BROADCAST_OS CORP.", cls: "header", delay: 60 },
+            { text: "ALL RIGHTS RESERVED.", cls: "dim", delay: 300 },
+            { text: "", delay: 200 },
+            { text: "CPU: COGNITIVE_GRAVITY(TM) PROCESSOR @ 72 BPM", delay: 100 },
+            { text: "CHECKING NVRAM... 102400KB OK", delay: 150 },
+            { text: "SEARCHING FOR SUBJECTIVITY... NOT FOUND.", cls: "warn", delay: 400 },
+            { text: "INITIALIZING ATTENTION_ZONING_ENGINE... [ OK ]", delay: 120 },
+            { text: "", delay: 150 },
+            { text: "DETECTING PERIPHERALS:", cls: "white", delay: 80 },
+            { text: "> CONSENT_INPUT_DEVICE..................[ DETECTED ]", delay: 90 },
+            { text: "> SUB-PRIME_LOGIC_CONTROLLER............[ DETECTED ]", delay: 90 },
+            { text: "> AIRWAVE_SYNTH_V1 (DORIAN MODE)........[ READY ]", cls: "purple", delay: 120 },
+            { text: "", delay: 150 },
+            { text: "LOADING CORE DRIVERS:", cls: "white", delay: 80 },
+            { text: "> manufacturing_consent.sys.............[ LOADED ]", delay: 70 },
+            { text: "> antisocial_incentives.vxd.............[ LOADED ]", delay: 70 },
+            { text: "> solo_jazz_cup_palette.dll.............[ LOADED ]", delay: 70 },
+            { text: "> mike_tyson_knockout_logic.bin.........[ LOADED ]", delay: 100 },
+            { text: "", delay: 150 },
+            { text: "NETWORK STATUS:", cls: "white", delay: 80 },
+            { text: "IP: 127.0.0.6:47 (LOCAL_ENNUI)", delay: 80 },
+            { text: "GATEWAY: THE_PARKING_LOT_SUNSET", delay: 80 },
+            { text: "PACKET LOSS: 0% (TOTAL_CONGRUENCE_DETECTED)", delay: 200 },
+            { text: "", delay: 150 },
+            { text: "[ WARNING ] : OPTIMIZATION_LEVEL IS AT 0.0%", cls: "warn", delay: 200 },
+            { text: "[ WARNING ] : HUMAN_AGENCY DETECTED IN OPERATOR_CHAIR", cls: "warn", delay: 300 },
+            { text: "[ NOTICE  ] : THE TIME IS 6:47 PM. THE PARKING LOT IS SILENT.", cls: "dim", delay: 400 },
+            { text: "", delay: 200 },
+            { text: "MOUNTING DRIVE C: (THE_SHADOW_LAYER)...", delay: 120 },
+            { text: "SCANNING FOR MODERATE_SENTIMENT...", delay: 100 },
+        ];
+
+        // The progress bar and final lines are handled separately
+        const POST_FINAL = [
+            { text: "RESULT: 42,901 NODES FLAGGED FOR RE-EDUCATION.", cls: "warn", delay: 300 },
+            { text: "", delay: 150 },
+            { text: "BOOT SEQUENCE COMPLETE.", cls: "header", delay: 400 },
+            { text: "", delay: 200 },
+            { text: 'SYSTEM_MESSAGE:', cls: "white", delay: 100 },
+            { text: '"THE MACHINE REWARDS THE ARCHITECT.', cls: "quote", delay: 120 },
+            { text: ' THE ARCHITECT REWARDS THE STATE.', cls: "quote", delay: 120 },
+            { text: ' THE STATE IS THE ONLY FEED."', cls: "quote", delay: 500 },
+            { text: "", delay: 200 },
+            { text: "PRESS [ START_OS ] TO BEGIN THE TRANSITION TO 6:48 PM.", cls: "header", delay: 0 },
+        ];
+
+        const terminal = document.getElementById('bios-text');
+        const cursor = document.getElementById('cursor');
+        let lineIndex = 0;
+
+        function addLine(text, cls) {
+            const span = document.createElement('span');
+            if (cls) span.className = cls;
+            span.textContent = text + '\n';
+            terminal.appendChild(span);
+            // Auto-scroll
+            const boot = document.getElementById('boot-screen');
+            boot.scrollTop = boot.scrollHeight;
+        }
+
+        function typeProgressBar(callback) {
+            const bar = document.createElement('span');
+            terminal.appendChild(bar);
+            let progress = 0;
+            const total = 36;
+
+            function tick() {
+                if (progress <= total) {
+                    bar.textContent = '[' + '#'.repeat(progress) + ' '.repeat(total - progress) + '] ' + Math.round(progress / total * 100) + '%';
+                    progress++;
+                    setTimeout(tick, 15 + Math.random() * 25);
+                } else {
+                    bar.textContent += '\n';
+                    callback();
+                }
+            }
+            tick();
+        }
+
+        function typeLines(lines, index, callback) {
+            if (index >= lines.length) {
+                if (callback) callback();
+                return;
+            }
+
+            const line = lines[index];
+            addLine(line.text, line.cls);
+
+            // Jitter for realism
+            const jitter = Math.random() * 60;
+            setTimeout(() => typeLines(lines, index + 1, callback), line.delay + jitter);
+        }
+
+        function startBoot() {
+            // Check WebGPU first
+            if (!navigator.gpu) {
+                const btn = document.getElementById('start-btn');
+                const error = document.getElementById('webgpu-error');
+                if (btn) btn.style.display = 'none';
+                if (cursor) cursor.style.display = 'none';
+                if (error) error.style.display = 'block';
+                return;
+            }
+
+            // Phase 1: Main POST lines
+            typeLines(POST_LINES, 0, () => {
+                // Phase 2: Progress bar
+                typeProgressBar(() => {
+                    // Phase 3: Final lines + show button
+                    typeLines(POST_FINAL, 0, () => {
+                        cursor.style.display = 'none';
+                        document.getElementById('start-btn').style.display = 'block';
+                    });
+                });
+            });
+        }
+
+        // The "Start" click resumes AudioContext and hides the boot screen
+        document.getElementById('start-btn').addEventListener('click', () => {
+            const boot = document.getElementById('boot-screen');
+            if (boot) {
+                boot.classList.add('hidden');
+                setTimeout(() => boot.remove(), 900);
+            }
+            // Dispatch event for WASM to pick up (Web Audio API user gesture)
+            window.dispatchEvent(new CustomEvent('broadcast-os-ready'));
+        });
+
+        // Start the POST sequence on load
+        window.addEventListener('load', startBoot);
+    </script>
+</body>
+
+</html>
