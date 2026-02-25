@@ -9,8 +9,8 @@
         content="SimSitting: A SimCity-like media company simulator. Interactive art exploring mechanisms of control, media manipulation, and the attention economy. 100,000 agents. WebGPU. The time is 6:47 PM." />
     
 <script type="module">
-import init, * as bindings from '/simsitting-4e6887ff491b040f.js';
-const wasm = await init({ module_or_path: '/simsitting-4e6887ff491b040f_bg.wasm' });
+import init, * as bindings from '/simsitting-aae7e24b9841eb57.js';
+const wasm = await init({ module_or_path: '/simsitting-aae7e24b9841eb57_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -184,7 +184,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             mix-blend-mode: multiply;
         }
     </style>
-<link rel="modulepreload" href="/simsitting-4e6887ff491b040f.js" crossorigin="anonymous" integrity="sha384-ubVBWWOImKOn3oNl4bGmU1h+2pTjRrd3DgzVmMw+4qJgoUnVtKcTawuLDpHxriP/"><link rel="preload" href="/simsitting-4e6887ff491b040f_bg.wasm" crossorigin="anonymous" integrity="sha384-rAxa5e8yEPBVnz86rvWxqBDzSngZHhKUf+0SxKGt4Gkk6UnchXEAEmxiCud997u+" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/simsitting-aae7e24b9841eb57.js" crossorigin="anonymous" integrity="sha384-tAx/hNZ3UUlZjs2knnbs+n+AMz+RTEgAp7xST5vGRwQHnfkts6dUb6/idwsjNwAD"><link rel="preload" href="/simsitting-aae7e24b9841eb57_bg.wasm" crossorigin="anonymous" integrity="sha384-4GDrr+8lPjpsPdBmxoJnuQ1pGAMyMyAxdZzr6NsrBbYz+qvCiJXtLtHlMAfIKrQz" as="fetch" type="application/wasm"></head>
 
 <body>
     <canvas id="bevy-canvas"></canvas>
