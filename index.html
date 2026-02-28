@@ -9,8 +9,8 @@
         content="SimSitting: A SimCity-like media company simulator. Interactive art exploring mechanisms of control, media manipulation, and the attention economy. 100,000 agents. WebGPU. The time is 6:47 PM." />
     
 <script type="module">
-import init, * as bindings from '/simsitting-7f26ff0f11213c3.js';
-const wasm = await init({ module_or_path: '/simsitting-7f26ff0f11213c3_bg.wasm' });
+import init, * as bindings from '/simsitting-ca1c1accf8babd4f.js';
+const wasm = await init({ module_or_path: '/simsitting-ca1c1accf8babd4f_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -76,8 +76,9 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             font-size: 13px;
             line-height: 1.6;
             color: #33ff33;
-            white-space: pre;
-            max-width: 720px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-width: min(720px, 90vw);
         }
 
         #bios-text .header {
@@ -135,12 +136,31 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             letter-spacing: 0.15em;
             cursor: pointer;
             text-transform: uppercase;
-            transition: all 0.15s;
+            transition: background 0.15s, color 0.15s;
+            animation: btn-glow 2.5s ease-in-out infinite;
+        }
+
+        @keyframes btn-glow {
+
+            0%,
+            100% {
+                border-color: #33ff33;
+                box-shadow: 0 0 6px rgba(51, 255, 51, 0.3), inset 0 0 4px rgba(51, 255, 51, 0.05);
+                color: #33ff33;
+            }
+
+            50% {
+                border-color: #00a99d;
+                box-shadow: 0 0 14px rgba(0, 169, 157, 0.5), inset 0 0 6px rgba(0, 169, 157, 0.1);
+                color: #00a99d;
+            }
         }
 
         #start-btn:hover {
             background: #33ff33;
             color: #000;
+            animation: none;
+            box-shadow: 0 0 20px rgba(51, 255, 51, 0.6);
         }
 
         #start-btn:active {
@@ -184,7 +204,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             mix-blend-mode: multiply;
         }
     </style>
-<link rel="modulepreload" href="/simsitting-7f26ff0f11213c3.js" crossorigin="anonymous" integrity="sha384-0qYpP9zcp5uaHN/GVLcksogEk6/tMCtmwp+7hTtfRPW/MQBZzcmmMkuVWKqBhgSz"><link rel="modulepreload" href="/snippets/simsitting-a7776021bdd15b9d/inline1.js" crossorigin="anonymous" integrity="sha384-Q65o+MGCQVRS+WNtaNoRAMMZngmOeYPhqDt796lOKzQjcIo7Tyeg0NMv4mnM2Qnc"><link rel="modulepreload" href="/snippets/simsitting-a7776021bdd15b9d/inline0.js" crossorigin="anonymous" integrity="sha384-72R9EljHBHlhZimgzurzMlBt6wZYV6Em1hd+gt7xukxaNulTKi9v5S5O0bSk5PyJ"><link rel="preload" href="/simsitting-7f26ff0f11213c3_bg.wasm" crossorigin="anonymous" integrity="sha384-DaBVfozYLOEGNCnx0UI7x23AB6xVXi7wTlzDgtAziSXwbu7IuU3h+qPlvb8epfP5" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/simsitting-ca1c1accf8babd4f.js" crossorigin="anonymous" integrity="sha384-PQxNGh2wAyzfUUW8+DXlu0pfl9PW2BC9e0KJJuLO1FHdsr2LHUPshM5N58THuXI/"><link rel="modulepreload" href="/snippets/simsitting-a7776021bdd15b9d/inline0.js" crossorigin="anonymous" integrity="sha384-72R9EljHBHlhZimgzurzMlBt6wZYV6Em1hd+gt7xukxaNulTKi9v5S5O0bSk5PyJ"><link rel="modulepreload" href="/snippets/simsitting-a7776021bdd15b9d/inline1.js" crossorigin="anonymous" integrity="sha384-Q65o+MGCQVRS+WNtaNoRAMMZngmOeYPhqDt796lOKzQjcIo7Tyeg0NMv4mnM2Qnc"><link rel="preload" href="/simsitting-ca1c1accf8babd4f_bg.wasm" crossorigin="anonymous" integrity="sha384-737E1lK3vTeBH6g7pzLihjHaQCwCObq8Yh+B8L0TKDww+1uRh4TZYaQt10OOcYru" as="fetch" type="application/wasm"></head>
 
 <body>
     <canvas id="bevy-canvas"></canvas>
@@ -335,6 +355,42 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             }
             // Dispatch event for WASM to pick up (Web Audio API user gesture)
             window.dispatchEvent(new CustomEvent('broadcast-os-ready'));
+        });
+
+        let bootSkipped = false;
+
+        function skipBoot() {
+            if (bootSkipped) return;
+            bootSkipped = true;
+
+            // Kill all pending timeouts (boot animation uses setTimeout chains)
+            const highId = setTimeout(() => { }, 0);
+            for (let i = 0; i < highId; i++) clearTimeout(i);
+
+            // Clear existing output and show elision message
+            terminal.innerHTML = '';
+            addLine('^C', 'warn');
+            addLine('AUTOMATIC BOOT SEQUENCE ELIDED.', 'warn');
+            addLine('FAST-FORWARDING TO OPERATOR PROMPT...', 'dim');
+            addLine('', '');
+
+            // Show final lines instantly
+            for (const line of POST_FINAL) {
+                addLine(line.text, line.cls);
+            }
+
+            // Show button, hide cursor
+            cursor.style.display = 'none';
+            document.getElementById('start-btn').style.display = 'block';
+        }
+
+        // Enter or Space skips boot animation
+        document.addEventListener('keydown', function onSkip(e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                skipBoot();
+                document.removeEventListener('keydown', onSkip);
+            }
         });
 
         // Start the POST sequence on load
